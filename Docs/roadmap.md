@@ -12,11 +12,11 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 
 **Goal:** a clean, buildable, empty-but-structured Go repository that anyone can clone and build on day one.
 
-- [ ] **0.1 Repository setup**
+- [x] **0.1 Repository setup**
   - Create the single monorepo (`locker`) on GitHub under a permissive license (Apache 2.0 or MIT — decide and add `LICENSE`).
   - Add `README.md` (already done), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md` (how to report vulnerabilities).
   - Set up `.gitignore`, `go.mod` / `go.sum`, Go version pin.
-- [ ] **0.2 Repository layout**
+- [x] **0.2 Repository layout**
   - `/cmd/locker` — CLI entrypoint (`main.go`).
   - `/internal/proxy` — HTTP/HTTPS reverse proxy core.
   - `/internal/providers` — LLM provider adapters (OpenAI, Anthropic, Mistral).
@@ -25,11 +25,11 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
   - `/charts/locker` — Helm chart.
   - `/deploy` — Docker Compose examples, Kubernetes manifests.
   - `/docs` — public documentation (user-facing, distinct from internal `Docs/`).
-- [ ] **0.3 Tooling & CI baseline**
+- [x] **0.3 Tooling & CI baseline**
   - `Makefile` or `Taskfile` with `build`, `test`, `lint`, `run` targets.
   - GitHub Actions: lint (`golangci-lint`), unit tests, build-on-PR.
   - Pre-commit hooks (formatting, `go vet`).
-- [ ] **0.4 Deliverable** — empty proxy binary that compiles, runs, and returns `200 OK` on a health-check endpoint (`/healthz`).
+- [x] **0.4 Deliverable** — empty proxy binary that compiles, runs, and returns `200 OK` on a health-check endpoint (`/healthz`).
 
 ---
 

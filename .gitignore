@@ -1,0 +1,21 @@
+# Build artifacts
+/bin/
+/dist/
+*.exe
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Env / secrets
+.env
+*.local.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
