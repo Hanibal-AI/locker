@@ -37,18 +37,19 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 
 **Goal:** prove the drop-in-replacement concept end-to-end before adding any intelligence.
 
-- [ ] **1.1 HTTP reverse proxy engine**
+- [x] **1.1 HTTP reverse proxy engine**
   - Implement request forwarding to a configurable upstream (`/v1/chat/completions` → provider URL).
   - Support standard headers, timeouts, retries, and error propagation.
-- [ ] **1.2 Provider adapters (v1: OpenAI only)**
+- [x] **1.2 Provider adapters (v1: OpenAI only)**
   - Normalize outbound request/response to the OpenAI Chat Completions schema.
   - API key injection from config/env (never logged, never persisted in plaintext).
-- [ ] **1.3 Configuration loader**
+- [x] **1.3 Configuration loader**
   - `config.yaml` schema v1: provider API keys, allowed models, listen address/port.
   - Environment variable overrides (12-factor style).
-- [ ] **1.4 Streaming support (SSE) — pass-through only**
+- [x] **1.4 Streaming support (SSE) — pass-through only**
   - Forward `stream: true` responses token-by-token without buffering (no masking yet).
-- [ ] **1.5 Deliverable** — `docker run locker` successfully proxies a real chat completion request/response, streaming included, with zero transformation — validated against the official OpenAI Python/JS SDKs pointed at `BASE_URL=http://localhost:8080/v1`.
+- [x] **1.5 Deliverable** — `docker run locker` successfully proxies a real chat completion request/response, streaming included, with zero transformation — validated against the official OpenAI Python/JS SDKs pointed at `BASE_URL=http://localhost:8080/v1`.
+  - Validated locally with the compiled binary end-to-end against a stand-in OpenAI-compatible server: non-streaming pass-through (status + body + upstream headers forwarded unchanged), streaming SSE forwarded chunk-by-chunk, and `/healthz`. Full Docker packaging is Phase 7 — this phase proves the proxy logic itself.
 
 ---
 

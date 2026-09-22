@@ -7,12 +7,14 @@ Thanks for considering a contribution. Locker is the open source core proxy — 
 ```bash
 git clone https://github.com/Hanibal-AI/locker.git
 cd locker
+cp config.example.yaml config.yaml
+export OPENAI_API_KEY=sk-...
 make build
 make run
 curl http://localhost:8080/healthz
 ```
 
-Requires Go (version pinned in `.go-version`).
+Requires Go (version pinned in `.go-version`). Locker can also run without a `config.yaml` at all — see `internal/config/config.go` for the full list of `LOCKER_*` / `OPENAI_*` environment variables.
 
 ## Development workflow
 

@@ -1,0 +1,22 @@
+# Copy this file to config.yaml (gitignored) and fill in your provider
+# API key, or skip the file entirely and configure Locker purely through
+# environment variables — see internal/config/config.go for the full list.
+
+listen_addr: ":8080"
+request_timeout: 60s
+
+# Which entry under `providers` below handles requests. Only "openai" is
+# implemented so far (see Docs/roadmap.md Phase 6 for more providers).
+provider: openai
+
+providers:
+  openai:
+    # Reads from the OPENAI_API_KEY environment variable at load time.
+    # Never commit a real key here.
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"
+
+# If set, only these models may be requested through Locker; any other
+# model is rejected with 403 before the request reaches the provider.
+# Leave empty to allow any model.
+allowed_models: []
