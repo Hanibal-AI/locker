@@ -5,6 +5,11 @@
 listen_addr: ":8080"
 request_timeout: 60s
 
+# Closes a streaming upstream response if no bytes arrive for this long,
+# so a stalled provider can't hold a connection open forever. 0 disables
+# this watchdog. See Docs/roadmap.md Phase 5.3.
+stream_idle_timeout: 90s
+
 # Which entry under `providers` below handles requests. Only "openai" is
 # implemented so far (see Docs/roadmap.md Phase 6 for more providers).
 provider: openai
@@ -44,3 +49,9 @@ pii:
   # see the package doc comment. On by default.
   ner:
     disabled: false
+
+  # Bounds how many trailing bytes of a streamed response are held back
+  # to avoid emitting a split placeholder token — a latency/accuracy
+  # tradeoff. 0 uses the built-in default (64 bytes). See Docs/roadmap.md
+  # Phase 5.1.
+  stream_lookback_bytes: 0

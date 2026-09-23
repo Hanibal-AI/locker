@@ -44,7 +44,7 @@ func TestHandleChatCompletions_PassThrough(t *testing.T) {
 	defer upstream.Close()
 
 	provider := &stubProvider{baseURL: upstream.URL, authHeader: "Bearer sk-test"}
-	server := New(provider, 5*time.Second, nil, nil)
+	server := New(Options{Provider: provider, RequestTimeout: 5 * time.Second})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","messages":[]}`))
 	rec := httptest.NewRecorder()
@@ -68,7 +68,7 @@ func TestHandleChatCompletions_AllowedModelsRejects(t *testing.T) {
 	defer upstream.Close()
 
 	provider := &stubProvider{baseURL: upstream.URL}
-	server := New(provider, 5*time.Second, []string{"gpt-4o"}, nil)
+	server := New(Options{Provider: provider, RequestTimeout: 5 * time.Second, AllowedModels: []string{"gpt-4o"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-3.5-turbo","messages":[]}`))
 	rec := httptest.NewRecorder()
@@ -87,7 +87,7 @@ func TestHandleChatCompletions_AllowedModelsPermits(t *testing.T) {
 	defer upstream.Close()
 
 	provider := &stubProvider{baseURL: upstream.URL}
-	server := New(provider, 5*time.Second, []string{"gpt-4o"}, nil)
+	server := New(Options{Provider: provider, RequestTimeout: 5 * time.Second, AllowedModels: []string{"gpt-4o"}})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","messages":[]}`))
 	rec := httptest.NewRecorder()
@@ -111,7 +111,7 @@ func TestHandleChatCompletions_Streaming(t *testing.T) {
 	defer upstream.Close()
 
 	provider := &stubProvider{baseURL: upstream.URL}
-	server := New(provider, 5*time.Second, nil, nil)
+	server := New(Options{Provider: provider, RequestTimeout: 5 * time.Second})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","stream":true}`))
 	rec := httptest.NewRecorder()
@@ -131,7 +131,7 @@ func TestHandleChatCompletions_Streaming(t *testing.T) {
 
 func TestHandleChatCompletions_UpstreamUnreachable(t *testing.T) {
 	provider := &stubProvider{baseURL: "http://127.0.0.1:1"} // reserved, always refused
-	server := New(provider, 2*time.Second, nil, nil)
+	server := New(Options{Provider: provider, RequestTimeout: 2 * time.Second})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`))
 	rec := httptest.NewRecorder()
@@ -143,7 +143,7 @@ func TestHandleChatCompletions_UpstreamUnreachable(t *testing.T) {
 }
 
 func TestHandleChatCompletions_MethodNotAllowed(t *testing.T) {
-	server := New(&stubProvider{baseURL: "http://example.invalid"}, 5*time.Second, nil, nil)
+	server := New(Options{Provider: &stubProvider{baseURL: "http://example.invalid"}, RequestTimeout: 5 * time.Second})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
@@ -155,7 +155,7 @@ func TestHandleChatCompletions_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	server := New(&stubProvider{baseURL: "http://example.invalid"}, 5*time.Second, nil, nil)
+	server := New(Options{Provider: &stubProvider{baseURL: "http://example.invalid"}, RequestTimeout: 5 * time.Second})
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()

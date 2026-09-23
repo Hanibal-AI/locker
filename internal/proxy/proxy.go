@@ -14,7 +14,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Hanibal-AI/locker/internal/pii"
@@ -35,31 +37,53 @@ var hopByHopHeaders = []string{
 // masks PII in requests and restores it in responses, and forwards to a
 // single configured Provider.
 type Server struct {
-	provider      providers.Provider
-	client        *http.Client
-	allowedModels map[string]struct{}
-	pii           *pii.Engine
+	provider          providers.Provider
+	client            *http.Client
+	allowedModels     map[string]struct{}
+	pii               *pii.Engine
+	streamLookback    int
+	streamIdleTimeout time.Duration
 }
 
-// New builds a Server that forwards to provider, bounding time-to-first-byte
-// from upstream by requestTimeout. If allowedModels is non-empty, requests
-// for any other model are rejected before being forwarded. piiEngine masks
-// PII in every request and restores it in every response; pass an Engine
-// built from a config.PIIConfig with Disabled: true to turn this off.
-func New(provider providers.Provider, requestTimeout time.Duration, allowedModels []string, piiEngine *pii.Engine) *Server {
-	am := make(map[string]struct{}, len(allowedModels))
-	for _, m := range allowedModels {
+// Options configures a Server. See Docs/roadmap.md Phase 5.1/5.3 for why
+// the streaming knobs (StreamLookbackBytes, StreamIdleTimeout) exist.
+type Options struct {
+	Provider providers.Provider
+	// RequestTimeout bounds time-to-first-byte from upstream.
+	RequestTimeout time.Duration
+	// AllowedModels, if non-empty, rejects any other requested model
+	// before it's forwarded.
+	AllowedModels []string
+	// PII masks PII in every request and restores it in every response;
+	// pass an Engine built from a config.PIIConfig with Disabled: true
+	// (or nil) to turn this off.
+	PII *pii.Engine
+	// StreamLookbackBytes bounds how many trailing bytes of a streamed
+	// response are held back to avoid emitting a split placeholder
+	// token. 0 uses pii.DefaultPlaceholderLookback.
+	StreamLookbackBytes int
+	// StreamIdleTimeout closes a streaming upstream response if no bytes
+	// arrive for this long. 0 disables the watchdog.
+	StreamIdleTimeout time.Duration
+}
+
+// New builds a Server per opts.
+func New(opts Options) *Server {
+	am := make(map[string]struct{}, len(opts.AllowedModels))
+	for _, m := range opts.AllowedModels {
 		am[m] = struct{}{}
 	}
 	return &Server{
-		provider: provider,
+		provider: opts.Provider,
 		client: &http.Client{
 			Transport: &http.Transport{
-				ResponseHeaderTimeout: requestTimeout,
+				ResponseHeaderTimeout: opts.RequestTimeout,
 			},
 		},
-		allowedModels: am,
-		pii:           piiEngine,
+		allowedModels:     am,
+		pii:               opts.PII,
+		streamLookback:    opts.StreamLookbackBytes,
+		streamIdleTimeout: opts.StreamIdleTimeout,
 	}
 }
 
@@ -127,16 +151,27 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	copyHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
 
+	// Unmasking a request that contained PII changes the body length
+	// (e.g. "[EMAIL_1]" -> "jean.dupont@example.com"), so headers can't
+	// be committed with the upstream's Content-Length before that's
+	// known — doing so causes "wrote more than the declared
+	// Content-Length" and broken client connections under real load
+	// (found via scripts/loadtest, see Docs/roadmap.md Phase 5.2/5.5).
 	if isEventStream(resp.Header) {
-		streamResponse(w, resp.Body, table)
+		// A streamed body's final length isn't known upfront either; let
+		// the server chunk it instead of forwarding a now-meaningless
+		// Content-Length.
+		w.Header().Del("Content-Length")
+		w.WriteHeader(resp.StatusCode)
+		streamResponse(w, resp.Body, table, s.streamLookback, s.streamIdleTimeout)
 		return
 	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		log.Printf("error reading upstream response body: %v", err)
+		writeError(w, http.StatusBadGateway, "failed to read upstream response")
 		return
 	}
 	if table.Len() > 0 {
@@ -146,6 +181,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			respBody = unmasked
 		}
 	}
+
+	w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+	w.WriteHeader(resp.StatusCode)
 	if _, err := w.Write(respBody); err != nil {
 		log.Printf("error writing response body: %v", err)
 	}
@@ -220,15 +258,36 @@ func isEventStream(h http.Header) bool {
 }
 
 // streamResponse forwards body to w as soon as bytes are available,
-// restoring any placeholder tokens via table (see pii.StreamUnmasker) and
+// restoring any placeholder tokens via table (see pii.SSEUnmasker) and
 // flushing after every read so Server-Sent Events reach the client with
 // as little added buffering as safely possible (see Docs/roadmap.md
-// Phase 1.4 and 2.4).
-func streamResponse(w http.ResponseWriter, body io.Reader, table *pii.Table) {
+// Phase 1.4 and 2.4). lookback is forwarded to pii.NewSSEUnmasker. If
+// idleTimeout > 0, body is force-closed (and the loop exits) when no
+// bytes have arrived for that long — see Docs/roadmap.md Phase 5.3 and
+// streamWatchdog.
+func streamResponse(w http.ResponseWriter, body io.ReadCloser, table *pii.Table, lookback int, idleTimeout time.Duration) {
 	flusher, canFlush := w.(http.Flusher)
-	unmasker := pii.NewSSEUnmasker(table)
+	unmasker := pii.NewSSEUnmasker(table, lookback)
 	reader := bufio.NewReader(body)
 	buf := make([]byte, 4096)
+
+	var stalled atomic.Bool
+	var activity chan struct{}
+	if idleTimeout > 0 {
+		activity = make(chan struct{}, 1)
+		stop := make(chan struct{})
+		defer close(stop)
+		go streamWatchdog(body, idleTimeout, activity, stop, &stalled)
+	}
+	notifyActivity := func() {
+		if activity == nil {
+			return
+		}
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	}
 
 	flushOut := func(out []byte) bool {
 		if len(out) == 0 {
@@ -246,15 +305,42 @@ func streamResponse(w http.ResponseWriter, body io.Reader, table *pii.Table) {
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
+			notifyActivity()
 			if !flushOut(unmasker.Feed(buf[:n])) {
 				return
 			}
 		}
 		if err != nil {
-			if err != io.EOF {
+			if err != io.EOF && !stalled.Load() {
 				log.Printf("stream copy error: %v", err)
 			}
 			flushOut(unmasker.Flush())
+			return
+		}
+	}
+}
+
+// streamWatchdog closes closer — forcing the blocked Read in
+// streamResponse's loop to return an error — if no activity signal
+// arrives within timeout. It exits without acting if stop fires first
+// (the stream ended on its own). Exactly one long-lived goroutine per
+// active stream; it does not spawn per-read goroutines.
+func streamWatchdog(closer io.Closer, timeout time.Duration, activity <-chan struct{}, stop <-chan struct{}, stalled *atomic.Bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-activity:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timer.Reset(timeout)
+		case <-timer.C:
+			stalled.Store(true)
+			log.Printf("closing stalled streaming upstream: no data received for %s", timeout)
+			_ = closer.Close()
 			return
 		}
 	}

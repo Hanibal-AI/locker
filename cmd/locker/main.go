@@ -30,7 +30,14 @@ func main() {
 		log.Fatalf("pii config error: %v", err)
 	}
 
-	server := proxy.New(provider, cfg.RequestTimeout, cfg.AllowedModels, piiEngine)
+	server := proxy.New(proxy.Options{
+		Provider:            provider,
+		RequestTimeout:      cfg.RequestTimeout,
+		AllowedModels:       cfg.AllowedModels,
+		PII:                 piiEngine,
+		StreamLookbackBytes: cfg.PII.StreamLookbackBytes,
+		StreamIdleTimeout:   cfg.StreamIdleTimeout,
+	})
 
 	log.Printf("locker listening on %s (provider=%s, pii_masking=%t)", cfg.ListenAddr, cfg.Provider, !cfg.PII.Disabled)
 	if err := http.ListenAndServe(cfg.ListenAddr, server.Handler()); err != nil {

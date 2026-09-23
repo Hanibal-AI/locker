@@ -2,6 +2,7 @@
 /bin/
 /dist/
 *.exe
+/loadtest
 
 # Go
 *.test

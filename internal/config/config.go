@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +49,13 @@ type PIIConfig struct {
 	EnabledRules []string  `yaml:"enabled_rules"`
 	CustomRules  []PIIRule `yaml:"custom_rules"`
 	NER          NERConfig `yaml:"ner"`
+	// StreamLookbackBytes bounds how many trailing bytes of a streamed
+	// response Locker holds back to avoid emitting a split placeholder
+	// token — a latency/accuracy tradeoff (Docs/roadmap.md Phase 5.1): a
+	// larger value tolerates longer placeholder tokens (e.g. long custom
+	// rule names) at the cost of a slightly larger per-flush buffer.
+	// Zero/unset uses pii.DefaultPlaceholderLookback.
+	StreamLookbackBytes int `yaml:"stream_lookback_bytes"`
 }
 
 // Config is Locker's top-level configuration.
@@ -58,13 +66,19 @@ type Config struct {
 	Providers      map[string]ProviderConfig `yaml:"providers"`
 	AllowedModels  []string                  `yaml:"allowed_models"`
 	PII            PIIConfig                 `yaml:"pii"`
+	// StreamIdleTimeout closes a streaming upstream response if no bytes
+	// arrive for this long, so a stalled provider can't hold a Locker
+	// goroutine and client connection open forever (Docs/roadmap.md
+	// Phase 5.3). Zero disables the watchdog.
+	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
 }
 
 const (
-	defaultListenAddr     = ":8080"
-	defaultRequestTimeout = 60 * time.Second
-	defaultProvider       = "openai"
-	defaultOpenAIBaseURL  = "https://api.openai.com/v1"
+	defaultListenAddr        = ":8080"
+	defaultRequestTimeout    = 60 * time.Second
+	defaultProvider          = "openai"
+	defaultOpenAIBaseURL     = "https://api.openai.com/v1"
+	defaultStreamIdleTimeout = 90 * time.Second
 )
 
 // Load reads configuration from the YAML file at path, if it exists,
@@ -72,12 +86,19 @@ const (
 // validates the result. If path does not exist, Locker falls back to
 // defaults plus environment variables only — a config.yaml file is
 // convenient but never required.
+//
+// Every error path here is deliberately loud: Load never silently
+// ignores a malformed value (an invalid duration, an unparsable bool) and
+// falls back to a default instead — see Docs/roadmap.md Phase 5.3
+// ("config validation errors fail fast and loud at startup, no silent
+// misconfiguration").
 func Load(path string) (*Config, error) {
 	cfg := &Config{
-		ListenAddr:     defaultListenAddr,
-		RequestTimeout: defaultRequestTimeout,
-		Provider:       defaultProvider,
-		Providers:      map[string]ProviderConfig{},
+		ListenAddr:        defaultListenAddr,
+		RequestTimeout:    defaultRequestTimeout,
+		Provider:          defaultProvider,
+		Providers:         map[string]ProviderConfig{},
+		StreamIdleTimeout: defaultStreamIdleTimeout,
 	}
 
 	raw, err := os.ReadFile(path)
@@ -95,7 +116,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	applyEnvOverrides(cfg)
+	if err := applyEnvOverrides(cfg); err != nil {
+		return nil, err
+	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -103,37 +126,53 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-func applyEnvOverrides(cfg *Config) {
+func applyEnvOverrides(cfg *Config) error {
 	if v := os.Getenv("LOCKER_LISTEN_ADDR"); v != "" {
 		cfg.ListenAddr = v
 	}
 	if v := os.Getenv("LOCKER_REQUEST_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.RequestTimeout = d
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("LOCKER_REQUEST_TIMEOUT=%q is not a valid duration: %w", v, err)
 		}
+		cfg.RequestTimeout = d
+	}
+	if v := os.Getenv("LOCKER_STREAM_IDLE_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("LOCKER_STREAM_IDLE_TIMEOUT=%q is not a valid duration: %w", v, err)
+		}
+		cfg.StreamIdleTimeout = d
 	}
 	if v := os.Getenv("LOCKER_PROVIDER"); v != "" {
 		cfg.Provider = v
 	}
 	if v := os.Getenv("LOCKER_ALLOWED_MODELS"); v != "" {
-		models := strings.Split(v, ",")
-		for i := range models {
-			models[i] = strings.TrimSpace(models[i])
-		}
-		cfg.AllowedModels = models
+		cfg.AllowedModels = splitTrim(v)
 	}
 	if v := os.Getenv("LOCKER_PII_DISABLED"); v != "" {
-		cfg.PII.Disabled = v == "true" || v == "1"
+		b, err := parseBoolStrict(v)
+		if err != nil {
+			return fmt.Errorf("LOCKER_PII_DISABLED=%q is not a valid boolean: %w", v, err)
+		}
+		cfg.PII.Disabled = b
 	}
 	if v := os.Getenv("LOCKER_PII_NER_DISABLED"); v != "" {
-		cfg.PII.NER.Disabled = v == "true" || v == "1"
+		b, err := parseBoolStrict(v)
+		if err != nil {
+			return fmt.Errorf("LOCKER_PII_NER_DISABLED=%q is not a valid boolean: %w", v, err)
+		}
+		cfg.PII.NER.Disabled = b
 	}
 	if v := os.Getenv("LOCKER_PII_ENABLED_RULES"); v != "" {
-		rules := strings.Split(v, ",")
-		for i := range rules {
-			rules[i] = strings.TrimSpace(rules[i])
+		cfg.PII.EnabledRules = splitTrim(v)
+	}
+	if v := os.Getenv("LOCKER_PII_STREAM_LOOKBACK_BYTES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return fmt.Errorf("LOCKER_PII_STREAM_LOOKBACK_BYTES=%q is not a valid non-negative integer", v)
 		}
-		cfg.PII.EnabledRules = rules
+		cfg.PII.StreamLookbackBytes = n
 	}
 
 	openai := cfg.Providers["openai"]
@@ -147,6 +186,33 @@ func applyEnvOverrides(cfg *Config) {
 		openai.BaseURL = defaultOpenAIBaseURL
 	}
 	cfg.Providers["openai"] = openai
+	return nil
+}
+
+// parseBoolStrict accepts only "true" or "false" (case-insensitive) — no
+// permissive "1"/"0"/"yes" aliases — so a typo in an env var value fails
+// loudly instead of silently taking the "false" branch.
+func parseBoolStrict(v string) (bool, error) {
+	switch strings.ToLower(v) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf(`must be "true" or "false"`)
+	}
+}
+
+func splitTrim(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (c *Config) validate() error {
@@ -159,6 +225,15 @@ func (c *Config) validate() error {
 	}
 	if p.APIKey == "" {
 		return fmt.Errorf("providers.%s.api_key is required (set it in config.yaml or via the corresponding *_API_KEY environment variable)", c.Provider)
+	}
+	if c.PII.StreamLookbackBytes < 0 {
+		return fmt.Errorf("pii.stream_lookback_bytes must not be negative, got %d", c.PII.StreamLookbackBytes)
+	}
+	if c.RequestTimeout < 0 {
+		return fmt.Errorf("request_timeout must not be negative, got %s", c.RequestTimeout)
+	}
+	if c.StreamIdleTimeout < 0 {
+		return fmt.Errorf("stream_idle_timeout must not be negative, got %s", c.StreamIdleTimeout)
 	}
 	return nil
 }

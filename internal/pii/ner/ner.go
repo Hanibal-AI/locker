@@ -27,6 +27,17 @@
 // name mentioned with zero context) — the Recognizer interface exists so
 // a statistical backend can be swapped in later without touching the
 // pipeline (internal/pii/engine.go) that calls it.
+//
+// Graceful degradation (Docs/roadmap.md Phase 5.3): NewHeuristicRecognizer
+// has no external dependency (no model file, no subprocess, no network
+// call), so it cannot fail to load — there is no degraded state to fall
+// back to today. This is a deliberate consequence of the packaging choice
+// above, not an oversight. If a future Recognizer backend is added that
+// *can* fail to load (e.g. a sidecar not reachable, a missing model
+// file), it must report that failure through pii.NewEngine's existing
+// (*Engine, error) return — the same fail-fast-at-startup path already
+// used for an invalid custom RegEx rule — rather than silently disabling
+// Layer 2 and downgrading detection coverage without telling the operator.
 package ner
 
 // EntityType identifies the kind of entity recognized. These values are

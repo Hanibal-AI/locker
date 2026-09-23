@@ -6,11 +6,18 @@ import (
 	"strings"
 )
 
-// maxPlaceholderLookback bounds how far back SSEUnmasker looks for the
-// start of a not-yet-complete placeholder token. Built-in and custom
-// placeholders are short (e.g. "[EMPLOYEE_ID_12]"); this is generous
-// headroom.
-const maxPlaceholderLookback = 64
+// DefaultPlaceholderLookback bounds how far back SSEUnmasker looks for the
+// start of a not-yet-complete placeholder token, when no explicit value is
+// given to NewSSEUnmasker. Built-in and custom placeholders are short
+// (e.g. "[EMPLOYEE_ID_12]"); this is generous headroom.
+//
+// This is exposed as a config knob (Docs/roadmap.md Phase 5.1,
+// config.PIIConfig.StreamLookbackBytes) because it is a latency/accuracy
+// tradeoff: a larger value tolerates longer placeholder tokens split
+// across events at the cost of a slightly larger per-flush buffer; a
+// smaller value flushes sooner but risks emitting a very long custom
+// placeholder name half-restored if it happens to be split.
+const DefaultPlaceholderLookback = 64
 
 // SSEUnmasker restores placeholder tokens in the generated text of an
 // OpenAI-compatible Server-Sent Events chat-completion stream.
@@ -28,14 +35,21 @@ const maxPlaceholderLookback = 64
 // (e.g. the "[DONE]" sentinel, a comment line, a keep-alive) is forwarded
 // unchanged.
 type SSEUnmasker struct {
-	table   *Table
-	pending map[int]string // choice index -> not-yet-safe-to-flush suffix
-	buf     []byte         // raw bytes not yet forming one complete frame
+	table    *Table
+	pending  map[int]string // choice index -> not-yet-safe-to-flush suffix
+	buf      []byte         // raw bytes not yet forming one complete frame
+	lookback int
 }
 
-// NewSSEUnmasker builds an SSEUnmasker backed by table.
-func NewSSEUnmasker(table *Table) *SSEUnmasker {
-	return &SSEUnmasker{table: table, pending: map[int]string{}}
+// NewSSEUnmasker builds an SSEUnmasker backed by table. lookback bounds
+// how many trailing bytes are held back per event to avoid splitting a
+// placeholder token; pass 0 (or a negative value) to use
+// DefaultPlaceholderLookback.
+func NewSSEUnmasker(table *Table, lookback int) *SSEUnmasker {
+	if lookback <= 0 {
+		lookback = DefaultPlaceholderLookback
+	}
+	return &SSEUnmasker{table: table, pending: map[int]string{}, lookback: lookback}
 }
 
 // Feed appends chunk to the internal buffer and returns every complete
@@ -133,7 +147,7 @@ func (u *SSEUnmasker) unmaskField(obj map[string]any, field string, index int) {
 		return
 	}
 
-	safe, held := splitBeforePendingPlaceholder(text)
+	safe, held := splitBeforePendingPlaceholder(text, u.lookback)
 	obj[field] = u.table.Unmask(safe)
 	if held != "" {
 		u.pending[index] = held
@@ -143,11 +157,11 @@ func (u *SSEUnmasker) unmaskField(obj map[string]any, field string, index int) {
 // splitBeforePendingPlaceholder splits text at the last position that
 // cannot be the start of a not-yet-complete placeholder token, so the
 // prefix is always safe to unmask and emit now.
-func splitBeforePendingPlaceholder(text string) (safe, held string) {
+func splitBeforePendingPlaceholder(text string, maxLookback int) (safe, held string) {
 	n := len(text)
 	lookback := n
-	if lookback > maxPlaceholderLookback {
-		lookback = maxPlaceholderLookback
+	if lookback > maxLookback {
+		lookback = maxLookback
 	}
 	tailStart := n - lookback
 

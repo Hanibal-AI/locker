@@ -31,7 +31,7 @@ func sseFrame(delta string) string {
 }
 
 func TestSSEUnmasker_SingleFrame(t *testing.T) {
-	u := NewSSEUnmasker(newTableWithEmail(t))
+	u := NewSSEUnmasker(newTableWithEmail(t), 0)
 	out := u.Feed([]byte(sseFrame(`contact [EMAIL_1] now`)))
 	out = append(out, u.Flush()...)
 
@@ -50,7 +50,7 @@ func TestSSEUnmasker_SingleFrame(t *testing.T) {
 // framing bytes sit between the two halves in the raw stream; SSEUnmasker
 // must track the split per choice index instead.
 func TestSSEUnmasker_PlaceholderSplitAcrossSeparateEvents(t *testing.T) {
-	u := NewSSEUnmasker(newTableWithSIREN(t))
+	u := NewSSEUnmasker(newTableWithSIREN(t), 0)
 
 	frame1 := sseFrame(`our SIREN is [`)
 	frame2 := sseFrame(`SIREN_1] on file`)
@@ -70,7 +70,7 @@ func TestSSEUnmasker_PlaceholderSplitWithinOneRawChunk(t *testing.T) {
 	// A single Feed() call can also receive a TCP-level fragment that cuts
 	// a frame in half; that must still round-trip correctly once the rest
 	// of the frame arrives.
-	u := NewSSEUnmasker(newTableWithEmail(t))
+	u := NewSSEUnmasker(newTableWithEmail(t), 0)
 	full := sseFrame(`reach me at jean.dupont@example.com please`)
 	// Replace the real email with its placeholder in the "upstream" frame,
 	// as if the model had echoed the masked token back.
@@ -88,7 +88,7 @@ func TestSSEUnmasker_PlaceholderSplitWithinOneRawChunk(t *testing.T) {
 }
 
 func TestSSEUnmasker_DonePassesThrough(t *testing.T) {
-	u := NewSSEUnmasker(newTableWithEmail(t))
+	u := NewSSEUnmasker(newTableWithEmail(t), 0)
 	out := u.Feed([]byte("data: [DONE]\n\n"))
 	out = append(out, u.Flush()...)
 
@@ -99,7 +99,7 @@ func TestSSEUnmasker_DonePassesThrough(t *testing.T) {
 }
 
 func TestSSEUnmasker_UnknownPlaceholderLeftAlone(t *testing.T) {
-	u := NewSSEUnmasker(NewTable())
+	u := NewSSEUnmasker(NewTable(), 0)
 	out := u.Feed([]byte(sseFrame(`looks like [NOT_REAL_1] here`)))
 	out = append(out, u.Flush()...)
 
@@ -109,6 +109,43 @@ func TestSSEUnmasker_UnknownPlaceholderLeftAlone(t *testing.T) {
 	}
 }
 
+// TestSSEUnmasker_ConfigurableLookback proves the lookback window
+// (Docs/roadmap.md Phase 5.1, config.PIIConfig.StreamLookbackBytes) is a
+// real, effective knob: a window too small to cover the placeholder
+// fails to reassemble it, while a large-enough window succeeds. The split
+// lands a few characters into the token (not right at the "[") so a
+// too-small window genuinely has to look past other characters to find
+// the opening bracket.
+func TestSSEUnmasker_ConfigurableLookback(t *testing.T) {
+	// "[SIREN_1]" is 9 bytes long; split after "[SIR".
+	frame1 := sseFrame(`our SIREN is [SIR`)
+	frame2 := sseFrame(`EN_1] on file`)
+
+	t.Run("lookback too small: placeholder is not reassembled", func(t *testing.T) {
+		u := NewSSEUnmasker(newTableWithSIREN(t), 1)
+		var out []byte
+		out = append(out, u.Feed([]byte(frame1))...)
+		out = append(out, u.Feed([]byte(frame2))...)
+		out = append(out, u.Flush()...)
+
+		if strings.Contains(string(out), "123456782") {
+			t.Errorf("expected the placeholder to survive un-restored with a too-small lookback, got %q", out)
+		}
+	})
+
+	t.Run("default lookback: placeholder is reassembled", func(t *testing.T) {
+		u := NewSSEUnmasker(newTableWithSIREN(t), 0)
+		var out []byte
+		out = append(out, u.Feed([]byte(frame1))...)
+		out = append(out, u.Feed([]byte(frame2))...)
+		out = append(out, u.Flush()...)
+
+		if !strings.Contains(string(out), "123456782") {
+			t.Errorf("expected the placeholder to be restored with the default lookback, got %q", out)
+		}
+	})
+}
+
 func TestSSEUnmasker_ParallelChoicesTrackedIndependently(t *testing.T) {
 	table := NewTable()
 	table.forward["[EMAIL_1]"] = "jean.dupont@example.com"
@@ -116,7 +153,7 @@ func TestSSEUnmasker_ParallelChoicesTrackedIndependently(t *testing.T) {
 	table.counts[TypeEmail] = 1
 	table.counts[TypeSIREN] = 1
 
-	u := NewSSEUnmasker(table)
+	u := NewSSEUnmasker(table, 0)
 	frame := `data: {"choices":[` +
 		`{"index":0,"delta":{"content":"email [EMAIL_1]"}},` +
 		`{"index":1,"delta":{"content":"siren [SIREN_1]"}}` +

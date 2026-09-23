@@ -130,22 +130,28 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 
 ## Phase 5 — Streaming, Performance & Hardening
 
-**Goal:** make the full pipeline (RegEx + NER + symbolic layer) production-grade under real streaming and load conditions.
+**Goal:** make the full pipeline (RegEx + NER + symbolic layer (later)) production-grade under real streaming and load conditions. Phase 4 (the symbolic "Fourmi" layer) was deliberately skipped ahead of this phase; this phase hardens what exists today (Layer 1 + Layer 2) and the symbolic layer, when built, inherits the same hardening.
 
-- [ ] **5.1 Streaming correctness under the full pipeline**
+- [x] **5.1 Streaming correctness under the full pipeline**
   - Re-validate SSE buffering strategy now that NER + symbolic layer are in the loop; ensure buffering window is as small as possible while still catching multi-token PII.
   - Add configurable buffer/flush strategy (latency vs. accuracy tradeoff exposed in config).
-- [ ] **5.2 Load & latency benchmarking**
+  - `pii.SSEUnmasker`'s lookback window is now a constructor parameter (`config.PIIConfig.StreamLookbackBytes` / `LOCKER_PII_STREAM_LOOKBACK_BYTES`), proven with a test showing a too-small window genuinely fails to reassemble a split placeholder while the default succeeds. Re-validated that an NER-tagged placeholder (`[PERSON_1]`, not just a RegEx one) split across two separate SSE events is restored correctly with no pipeline change needed — NER matches flow through the same `Table`/placeholder mechanism as RegEx matches.
+- [x] **5.2 Load & latency benchmarking**
   - Build a benchmark harness (`go test -bench` + a load-test script) simulating concurrent streaming sessions.
   - Publish target numbers (added latency, requests/sec, memory footprint) in `docs/benchmarks.md`.
-- [ ] **5.3 Failure modes & resilience**
+  - `internal/proxy/bench_test.go` (`go test -bench`, in-process) measures the full pipeline's CPU/alloc cost: ~0.57ms non-streaming, ~0.65ms streaming. `scripts/loadtest` (a standalone Go program, real sockets, real concurrent client connections) measured ~4,700-4,900 req/s at 50-200 concurrent clients with p99 latency 45-158ms and zero failed requests. Full numbers in `docs/benchmarks.md`.
+- [x] **5.3 Failure modes & resilience**
   - Upstream provider timeout/error handling and clear error propagation to the caller.
   - Config validation errors fail fast and loud at startup (no silent misconfiguration).
   - Graceful degradation strategy if the NER component fails to load (documented, not silent).
-- [ ] **5.4 Security hardening**
+  - Added a streaming idle-timeout watchdog (`config.StreamIdleTimeout` / `LOCKER_STREAM_IDLE_TIMEOUT`, default 90s): a stalled upstream stream is force-closed rather than holding a goroutine and client connection open forever. `config.Load`/`applyEnvOverrides` no longer silently swallow a malformed env var (bad duration, non-`true`/`false` bool, negative integer) — every one is now a hard error. NER "failing to load" has no failure mode by construction (no external dependency); documented in the `internal/pii/ner` package doc comment that any future backend that *can* fail to load must report it through `pii.NewEngine`'s existing `(*Engine, error)` return rather than silently degrading.
+- [x] **5.4 Security hardening**
   - Ensure API keys and unmasked PII are never written to logs by default.
   - Add a `SECURITY.md` threat-model section specific to a proxy that temporarily holds sensitive data in memory.
-- [ ] **5.5 Deliverable** — documented, reproducible benchmark results and a resilience test suite (chaos-style tests: upstream down, malformed input, oversized payloads) passing in CI.
+  - Verified by test (`internal/proxy/security_test.go`), not just convention: captures real log output across a full request lifecycle (including an upstream-failure error path) and asserts neither a provider API key nor a raw PII value ever appears in it. `SECURITY.md` now has a Threat Model section covering API key handling, the request-scoped PII memory window, logging guarantees, and what's explicitly out of scope (memory-dump-level attacks, TLS MITM, multi-tenant isolation).
+- [x] **5.5 Deliverable** — documented, reproducible benchmark results and a resilience test suite (chaos-style tests: upstream down, malformed input, oversized payloads) passing in CI.
+  - `internal/proxy/resilience_test.go` covers: upstream down, malformed request JSON, oversized payload, malformed upstream response, and a real-HTTP-connection regression test for a genuine bug this phase's load testing found (see below). All run as part of the existing `go test ./...` CI job — no new CI wiring needed.
+  - **Bug found and fixed during this phase**: `scripts/loadtest` (real sockets) immediately surfaced "wrote more than the declared Content-Length" / connection resets under load — invisible to `httptest.NewRecorder()`-based unit tests, which don't enforce HTTP wire-protocol framing. Cause: the non-streaming response path copied the upstream's `Content-Length` header and called `WriteHeader` *before* unmasking the body, but unmasking changes the body's byte length (e.g. `[EMAIL_1]` → `jean.dupont@example.com`). Fixed by deferring `Content-Length`/`WriteHeader` until the final, unmasked body is known (and stripping `Content-Length` entirely for streaming, letting the server chunk it). This is exactly the kind of bug Phase 5's real-process load testing exists to catch — not left as a known issue.
 
 ---
 
