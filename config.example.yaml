@@ -20,3 +20,20 @@ providers:
 # model is rejected with 403 before the request reaches the provider.
 # Leave empty to allow any model.
 allowed_models: []
+
+# PII detection/masking (internal/pii), applied to every request before
+# it reaches the provider and restored in every response, streaming
+# included. On by default.
+pii:
+  disabled: false
+
+  # Restrict to a subset of built-in rules: email, phone, iban,
+  # credit_card, siren, siret. Leave empty to enable all of them.
+  enabled_rules: []
+
+  # Custom RegEx rules, added on top of the built-ins. No validation
+  # formula is applied — shape match is enough.
+  custom_rules: []
+  #  - name: employee_id
+  #    pattern: 'EMP-\d{6}'
+  #    placeholder: EMPLOYEE_ID

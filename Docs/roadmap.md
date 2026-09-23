@@ -57,23 +57,25 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 
 **Goal:** first real anonymization layer — deterministic, structural, no NLP yet.
 
-- [ ] **2.1 RegEx rule engine**
+- [x] **2.1 RegEx rule engine**
   - Built-in patterns: email, phone number, IBAN, generic credit card shape.
   - Rule format defined in `config.yaml` so custom RegEx rules can be added without code changes.
-- [ ] **2.2 Validation formulas (reduce false positives)**
+- [x] **2.2 Validation formulas (reduce false positives)**
   - Luhn algorithm for credit card numbers.
   - SIREN/SIRET checksum validation (French business IDs).
   - IBAN checksum (mod-97) validation.
-- [ ] **2.3 Masking & re-identification table**
+- [x] **2.3 Masking & re-identification table**
   - In-memory, request-scoped table: original value ↔ placeholder token (`[EMAIL_1]`, `[CB_1]`).
   - Restore original values in the response before returning to the caller.
-- [ ] **2.4 Non-streaming path first, then streaming**
+- [x] **2.4 Non-streaming path first, then streaming**
   - Implement masking on full (non-streamed) requests/responses first.
   - Extend to streaming: buffer just enough tokens to safely detect+mask patterns spanning multiple SSE chunks, then flush — measure and cap added latency.
-- [ ] **2.5 Testing**
+  - Streaming turned out to need SSE/JSON-frame awareness, not just raw-byte buffering: a placeholder can be split across two separate, independently-encoded `data: {...}` events (e.g. a token boundary lands inside `[SIREN_1]`), which a byte-level pass cannot reassemble since JSON/SSE framing bytes sit between the two halves. `pii.SSEUnmasker` parses each frame and tracks a pending suffix per `choices[].index` instead.
+- [x] **2.5 Testing**
   - Unit tests per pattern (true positives, known false-positive traps: SIREN vs. credit card, internal product codes, etc.).
   - Golden-file tests: fixed input prompt → expected masked output.
-- [ ] **2.6 Deliverable** — a request containing an email, phone number, IBAN, or card number is provably masked before hitting the LLM provider, and correctly restored in the response — demoable end-to-end, streaming included.
+- [x] **2.6 Deliverable** — a request containing an email, phone number, IBAN, or card number is provably masked before hitting the LLM provider, and correctly restored in the response — demoable end-to-end, streaming included.
+  - Validated with `internal/pii` unit tests (91% coverage: validation formulas, engine detection/overlap resolution, table mask/unmask, JSON walking, SSE unmasking) and `internal/proxy` end-to-end tests proving the upstream never sees raw PII and the client always gets it restored, streaming included. Also re-validated against the compiled binary with a real OpenAI-shaped fake upstream, including the SSE placeholder-split scenario above (found and fixed during this validation, not left as a known issue).
 
 ---
 

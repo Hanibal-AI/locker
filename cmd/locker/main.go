@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/Hanibal-AI/locker/internal/config"
+	"github.com/Hanibal-AI/locker/internal/pii"
 	"github.com/Hanibal-AI/locker/internal/providers"
 	"github.com/Hanibal-AI/locker/internal/proxy"
 )
@@ -24,9 +25,14 @@ func main() {
 		log.Fatalf("provider error: %v", err)
 	}
 
-	server := proxy.New(provider, cfg.RequestTimeout, cfg.AllowedModels)
+	piiEngine, err := pii.NewEngine(cfg.PII)
+	if err != nil {
+		log.Fatalf("pii config error: %v", err)
+	}
 
-	log.Printf("locker listening on %s (provider=%s)", cfg.ListenAddr, cfg.Provider)
+	server := proxy.New(provider, cfg.RequestTimeout, cfg.AllowedModels, piiEngine)
+
+	log.Printf("locker listening on %s (provider=%s, pii_masking=%t)", cfg.ListenAddr, cfg.Provider, !cfg.PII.Disabled)
 	if err := http.ListenAndServe(cfg.ListenAddr, server.Handler()); err != nil {
 		log.Fatal(err)
 	}

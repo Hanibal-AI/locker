@@ -18,6 +18,27 @@ type ProviderConfig struct {
 	BaseURL string `yaml:"base_url"`
 }
 
+// PIIRule defines a custom RegEx detection rule, added on top of the
+// built-in ones (email, phone, iban, credit_card, siren, siret), with no
+// validation formula — shape match is enough. See Docs/roadmap.md
+// Phase 2.1.
+type PIIRule struct {
+	Name        string `yaml:"name"`
+	Pattern     string `yaml:"pattern"`
+	Placeholder string `yaml:"placeholder"`
+}
+
+// PIIConfig controls the PII detection/masking pipeline (internal/pii).
+type PIIConfig struct {
+	// Disabled turns PII masking off entirely. Zero value (false) keeps
+	// it on by default.
+	Disabled bool `yaml:"disabled"`
+	// EnabledRules restricts which built-in rules run. Empty means all of
+	// them: "email", "phone", "iban", "credit_card", "siren", "siret".
+	EnabledRules []string  `yaml:"enabled_rules"`
+	CustomRules  []PIIRule `yaml:"custom_rules"`
+}
+
 // Config is Locker's top-level configuration.
 type Config struct {
 	ListenAddr     string                    `yaml:"listen_addr"`
@@ -25,6 +46,7 @@ type Config struct {
 	Provider       string                    `yaml:"provider"`
 	Providers      map[string]ProviderConfig `yaml:"providers"`
 	AllowedModels  []string                  `yaml:"allowed_models"`
+	PII            PIIConfig                 `yaml:"pii"`
 }
 
 const (
@@ -88,6 +110,16 @@ func applyEnvOverrides(cfg *Config) {
 			models[i] = strings.TrimSpace(models[i])
 		}
 		cfg.AllowedModels = models
+	}
+	if v := os.Getenv("LOCKER_PII_DISABLED"); v != "" {
+		cfg.PII.Disabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LOCKER_PII_ENABLED_RULES"); v != "" {
+		rules := strings.Split(v, ",")
+		for i := range rules {
+			rules[i] = strings.TrimSpace(rules[i])
+		}
+		cfg.PII.EnabledRules = rules
 	}
 
 	openai := cfg.Providers["openai"]

@@ -1,7 +1,7 @@
 // Package proxy implements the HTTP reverse proxy engine that forwards
 // chat completion requests to an LLM provider, as described in
-// Docs/roadmap.md Phase 1.1. This phase is pass-through only: no PII
-// detection or masking happens here yet (see internal/pii, Phase 2+).
+// Docs/roadmap.md Phase 1.1. Requests are masked and responses restored
+// through internal/pii before/after forwarding (Phase 2).
 package proxy
 
 import (
@@ -17,10 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Hanibal-AI/locker/internal/pii"
 	"github.com/Hanibal-AI/locker/internal/providers"
 )
 
-const maxRequestBodyBytes = 10 << 20 // 10MB
+const maxBodyBytes = 10 << 20 // 10MB, applied to both request and response bodies
 
 // hopByHopHeaders are stripped before forwarding, per RFC 7230 §6.1 — they
 // describe the connection itself and must not be passed transparently
@@ -30,18 +31,22 @@ var hopByHopHeaders = []string{
 	"Te", "Trailer", "Transfer-Encoding", "Upgrade",
 }
 
-// Server is the Locker reverse proxy: it exposes an OpenAI-compatible API
-// and forwards requests to a single configured Provider.
+// Server is the Locker reverse proxy: it exposes an OpenAI-compatible API,
+// masks PII in requests and restores it in responses, and forwards to a
+// single configured Provider.
 type Server struct {
 	provider      providers.Provider
 	client        *http.Client
 	allowedModels map[string]struct{}
+	pii           *pii.Engine
 }
 
 // New builds a Server that forwards to provider, bounding time-to-first-byte
 // from upstream by requestTimeout. If allowedModels is non-empty, requests
-// for any other model are rejected before being forwarded.
-func New(provider providers.Provider, requestTimeout time.Duration, allowedModels []string) *Server {
+// for any other model are rejected before being forwarded. piiEngine masks
+// PII in every request and restores it in every response; pass an Engine
+// built from a config.PIIConfig with Disabled: true to turn this off.
+func New(provider providers.Provider, requestTimeout time.Duration, allowedModels []string, piiEngine *pii.Engine) *Server {
 	am := make(map[string]struct{}, len(allowedModels))
 	for _, m := range allowedModels {
 		am[m] = struct{}{}
@@ -54,6 +59,7 @@ func New(provider providers.Provider, requestTimeout time.Duration, allowedModel
 			},
 		},
 		allowedModels: am,
+		pii:           piiEngine,
 	}
 }
 
@@ -76,7 +82,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
 	_ = r.Body.Close()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read request body")
@@ -95,7 +101,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	upstreamReq, err := s.buildUpstreamRequest(r, body)
+	table := pii.NewTable()
+	forwardBody := body
+	if s.pii != nil {
+		masked, err := pii.MaskJSON(body, s.pii, table)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "request body must be valid JSON")
+			return
+		}
+		forwardBody = masked
+	}
+
+	upstreamReq, err := s.buildUpstreamRequest(r, forwardBody)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build upstream request")
 		return
@@ -113,11 +130,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if isEventStream(resp.Header) {
-		streamResponse(w, resp.Body)
+		streamResponse(w, resp.Body, table)
 		return
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		log.Printf("error copying response body: %v", err)
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if err != nil {
+		log.Printf("error reading upstream response body: %v", err)
+		return
+	}
+	if table.Len() > 0 {
+		if unmasked, err := pii.UnmaskJSON(respBody, table); err != nil {
+			log.Printf("error unmasking response body: %v", err)
+		} else {
+			respBody = unmasked
+		}
+	}
+	if _, err := w.Write(respBody); err != nil {
+		log.Printf("error writing response body: %v", err)
 	}
 }
 
@@ -190,26 +220,41 @@ func isEventStream(h http.Header) bool {
 }
 
 // streamResponse forwards body to w as soon as bytes are available,
+// restoring any placeholder tokens via table (see pii.StreamUnmasker) and
 // flushing after every read so Server-Sent Events reach the client with
-// no added buffering (see Docs/roadmap.md Phase 1.4).
-func streamResponse(w http.ResponseWriter, body io.Reader) {
+// as little added buffering as safely possible (see Docs/roadmap.md
+// Phase 1.4 and 2.4).
+func streamResponse(w http.ResponseWriter, body io.Reader, table *pii.Table) {
 	flusher, canFlush := w.(http.Flusher)
+	unmasker := pii.NewSSEUnmasker(table)
 	reader := bufio.NewReader(body)
 	buf := make([]byte, 4096)
+
+	flushOut := func(out []byte) bool {
+		if len(out) == 0 {
+			return true
+		}
+		if _, werr := w.Write(out); werr != nil {
+			return false
+		}
+		if canFlush {
+			flusher.Flush()
+		}
+		return true
+	}
+
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
+			if !flushOut(unmasker.Feed(buf[:n])) {
 				return
-			}
-			if canFlush {
-				flusher.Flush()
 			}
 		}
 		if err != nil {
 			if err != io.EOF {
 				log.Printf("stream copy error: %v", err)
 			}
+			flushOut(unmasker.Flush())
 			return
 		}
 	}
