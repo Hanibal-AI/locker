@@ -28,15 +28,26 @@ type PIIRule struct {
 	Placeholder string `yaml:"placeholder"`
 }
 
+// NERConfig controls PII Detection Pipeline Layer 2 (internal/pii/ner):
+// recognition of unstructured entities (names, organizations, locations,
+// dates) that RegEx alone cannot catch.
+type NERConfig struct {
+	// Disabled turns Layer 2 off while leaving Layer 1 (RegEx) active.
+	// Zero value (false) keeps it on by default.
+	Disabled bool `yaml:"disabled"`
+}
+
 // PIIConfig controls the PII detection/masking pipeline (internal/pii).
 type PIIConfig struct {
-	// Disabled turns PII masking off entirely. Zero value (false) keeps
-	// it on by default.
+	// Disabled turns PII masking off entirely (both layers). Zero value
+	// (false) keeps it on by default.
 	Disabled bool `yaml:"disabled"`
-	// EnabledRules restricts which built-in rules run. Empty means all of
-	// them: "email", "phone", "iban", "credit_card", "siren", "siret".
+	// EnabledRules restricts which built-in Layer 1 rules run. Empty
+	// means all of them: "email", "phone", "iban", "credit_card",
+	// "siren", "siret".
 	EnabledRules []string  `yaml:"enabled_rules"`
 	CustomRules  []PIIRule `yaml:"custom_rules"`
+	NER          NERConfig `yaml:"ner"`
 }
 
 // Config is Locker's top-level configuration.
@@ -113,6 +124,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("LOCKER_PII_DISABLED"); v != "" {
 		cfg.PII.Disabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LOCKER_PII_NER_DISABLED"); v != "" {
+		cfg.PII.NER.Disabled = v == "true" || v == "1"
 	}
 	if v := os.Getenv("LOCKER_PII_ENABLED_RULES"); v != "" {
 		rules := strings.Split(v, ",")

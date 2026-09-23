@@ -37,3 +37,10 @@ pii:
   #  - name: employee_id
   #    pattern: 'EMP-\d{6}'
   #    placeholder: EMPLOYEE_ID
+
+  # Layer 2: local NER (internal/pii/ner), catches unstructured PII
+  # RegEx can't — person names, organizations, locations, dates. A
+  # deterministic gazetteer/heuristic engine, not a statistical model;
+  # see the package doc comment. On by default.
+  ner:
+    disabled: false

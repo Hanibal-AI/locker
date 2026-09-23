@@ -3,8 +3,9 @@ package pii
 import "testing"
 
 // TestGolden_MaskThenUnmask pins the exact masked output for a set of
-// fixed prompts, and checks that unmasking round-trips back to the
-// original — see Docs/roadmap.md Phase 2.5.
+// fixed prompts (combining Layer 1 RegEx and Layer 2 NER matches), and
+// checks that unmasking round-trips back to the original — see
+// Docs/roadmap.md Phase 2.5 and Phase 3.5.
 func TestGolden_MaskThenUnmask(t *testing.T) {
 	e, err := NewEngine(defaultTestConfig())
 	if err != nil {
@@ -17,9 +18,9 @@ func TestGolden_MaskThenUnmask(t *testing.T) {
 		wantMasked string
 	}{
 		{
-			name:       "email and phone",
+			name:       "name, phone, and email",
 			prompt:     "Please call Jean at 06 12 34 56 78 or email jean.dupont@example.com",
-			wantMasked: "Please call Jean at [PHONE_1] or email [EMAIL_1]",
+			wantMasked: "Please call [PERSON_1] at [PHONE_1] or email [EMAIL_1]",
 		},
 		{
 			name:       "iban and siret in an hr-style request",
@@ -35,6 +36,17 @@ func TestGolden_MaskThenUnmask(t *testing.T) {
 			name:       "no pii, unchanged",
 			prompt:     "Summarize the attached quarterly report in three bullet points",
 			wantMasked: "Summarize the attached quarterly report in three bullet points",
+		},
+		{
+			// The exact Phase 3.5 deliverable example.
+			name:       "person, org, and loc (Phase 3 deliverable example)",
+			prompt:     "I work with Martin at Renault in Boulogne",
+			wantMasked: "I work with [PERSON_1] at [ORG_1] in [LOC_1]",
+		},
+		{
+			name:       "explicit date",
+			prompt:     "The contract was signed on 2024-03-12",
+			wantMasked: "The contract was signed on [DATE_1]",
 		},
 	}
 

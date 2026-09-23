@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Hanibal-AI/locker/internal/config"
+	"github.com/Hanibal-AI/locker/internal/pii/ner"
 )
 
 // Match is a single detected PII occurrence in a piece of text.
@@ -21,11 +22,14 @@ type Match struct {
 	End   int
 }
 
-// Engine detects PII in text using a set of RegEx rules, each optionally
-// backed by a validation formula (Luhn, IBAN checksum, ...) to cut down on
-// shape-only false positives.
+// Engine detects PII in text using Layer 1 (a set of RegEx rules, each
+// optionally backed by a validation formula such as Luhn or an IBAN
+// checksum) and, unless disabled, Layer 2 (internal/pii/ner, for
+// unstructured entities RegEx cannot catch: names, organizations,
+// locations, dates).
 type Engine struct {
 	rules []rule
+	ner   ner.Recognizer
 }
 
 // NewEngine builds an Engine from configuration.
@@ -68,13 +72,20 @@ func NewEngine(cfg config.PIIConfig) (*Engine, error) {
 		rules = append(rules, rule{typ: placeholder, pattern: pattern})
 	}
 
-	return &Engine{rules: rules}, nil
+	var recognizer ner.Recognizer
+	if !cfg.NER.Disabled {
+		recognizer = ner.NewHeuristicRecognizer()
+	}
+
+	return &Engine{rules: rules, ner: recognizer}, nil
 }
 
-// Detect returns every non-overlapping PII match found in text, ordered by
-// position. When two candidate matches overlap, the longer one wins —
-// e.g. a 14-digit SIRET candidate wins over a 9-digit SIREN candidate
-// starting at the same position.
+// Detect returns every non-overlapping PII match found in text, combining
+// Layer 1 (RegEx) and Layer 2 (NER) results, ordered by position. When
+// two candidate matches overlap — whether both from Layer 1, both from
+// Layer 2, or one of each — the longer one wins, e.g. a 14-digit SIRET
+// candidate wins over a 9-digit SIREN candidate starting at the same
+// position.
 func (e *Engine) Detect(text string) []Match {
 	var candidates []Match
 	for _, ru := range e.rules {
@@ -84,6 +95,11 @@ func (e *Engine) Detect(text string) []Match {
 				continue
 			}
 			candidates = append(candidates, Match{Type: ru.typ, Value: raw, Start: loc[0], End: loc[1]})
+		}
+	}
+	if e.ner != nil {
+		for _, ent := range e.ner.Recognize(text) {
+			candidates = append(candidates, Match{Type: string(ent.Type), Value: ent.Value, Start: ent.Start, End: ent.End})
 		}
 	}
 
