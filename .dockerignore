@@ -1,0 +1,11 @@
+.git
+bin/
+dist/
+*.md
+Docs/
+docs/
+.github/
+charts/
+deploy/
+scripts/
+config.yaml

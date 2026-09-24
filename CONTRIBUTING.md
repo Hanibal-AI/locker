@@ -16,12 +16,21 @@ curl http://localhost:8080/healthz
 
 Requires Go (version pinned in `.go-version`). Locker can also run without a `config.yaml` at all — see `internal/config/config.go` for the full list of `LOCKER_*` / `OPENAI_*` environment variables.
 
+Or with Docker, no Go toolchain needed:
+
+```bash
+docker build -t locker .
+docker run -p 8080:8080 -e OPENAI_API_KEY=sk-... locker
+```
+
 ## Development workflow
 
-- `make build` — compile the `locker` binary into `./bin`.
+- `make build` — compile the `locker` binary into `./bin` (with version info from `git describe`).
 - `make test` — run the test suite.
 - `make lint` — run `golangci-lint` (must pass before opening a PR).
 - `make run` — run the proxy locally with default config.
+- `make release-dry-run` — run the full release pipeline locally (every OS/arch binary, multi-arch Docker images) without publishing anything; requires [goreleaser](https://goreleaser.com) and Docker. Useful when touching `.goreleaser.yaml`, `Dockerfile`, or `.goreleaser/Dockerfile`.
+- `./bin/locker version` / `validate-config --config <path>` / `completion bash` — see `cmd/locker/main.go`.
 
 ## Project layout
 

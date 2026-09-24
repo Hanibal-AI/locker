@@ -176,16 +176,20 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 
 **Goal:** ship binaries and a Docker image from a single, git-tag-triggered pipeline, ready to run in under 5 minutes.
 
-- [ ] **7.1 goreleaser configuration**
+- [x] **7.1 goreleaser configuration**
   - Cross-compile for Linux/macOS/Windows (amd64/arm64).
   - Multi-arch Docker image build (multi-stage `Dockerfile`, minimal final image), published to GHCR — `GITHUB_TOKEN` is enough, no extra registry secrets to manage — tagged by semver + `latest`.
   - GitHub Release created automatically with binaries attached and a generated changelog.
-- [ ] **7.2 CLI polish**
+  - `.goreleaser.yaml`: 6 binary targets (linux/darwin/windows × amd64/arm64) via `builds`, archived with `LICENSE`/`README.md`/`config.example.yaml` bundled in; version/commit/date injected via `-ldflags -X main.*` (`cmd/locker/main.go` now reads these instead of hardcoded "dev"). Docker: two per-arch images (`dockers`) built from a minimal `.goreleaser/Dockerfile` that just copies goreleaser's already-cross-compiled binary — avoids a slow emulated `go build` under QEMU per target — joined into one multi-arch manifest (`docker_manifests`) at `ghcr.io/hanibal-ai/locker:{version,latest}`. A separate, self-contained root `Dockerfile` (full multi-stage `go build` inside) exists for `docker build .` without goreleaser, for local dev.
+- [x] **7.2 CLI polish**
   - `locker start --config config.yaml`, `locker version`, `locker validate-config`.
   - Shell completion (bash/zsh) as a nice-to-have.
-- [ ] **7.3 CI wiring**
+  - `cmd/locker` restructured around subcommands (`start`, `version`, `validate-config`, `completion bash`) while keeping the old flag-only invocation (`locker --config x`) working, so nothing that already depends on it breaks. Only bash completion implemented (zsh skipped — explicitly a nice-to-have). `validate-config`/`version`/`completion` refactored as testable pure functions (`cmd/locker/main_test.go`, 37.5% coverage — `start` itself isn't unit-tested since its job is to block forever serving traffic, already covered by `internal/proxy`'s own tests).
+- [x] **7.3 CI wiring**
   - New GitHub Actions workflow triggered on tag push (`v*`), running `goreleaser release`.
-- [ ] **7.4 Deliverable** — a new user can go from zero to a running, PII-masking proxy via `docker run` (the GHCR image) or by downloading a binary from GitHub Releases — both produced from the same tagged push, each path documented with a copy-pasteable quickstart.
+  - `.github/workflows/release.yml`: QEMU + Buildx setup, GHCR login, `goreleaser/goreleaser-action`. Also added a `goreleaser-check` job to the existing `ci.yml` (runs `goreleaser release --snapshot --clean` — the full pipeline, nothing published) so `.goreleaser.yaml`/`Dockerfile` drift is caught on every PR, not just at tag time.
+- [x] **7.4 Deliverable** — a new user can go from zero to a running, PII-masking proxy via `docker run` (the GHCR image) or by downloading a binary from GitHub Releases — both produced from the same tagged push, each path documented with a copy-pasteable quickstart.
+  - Validated locally end-to-end (no tag push needed to prove the pipeline): `goreleaser release --snapshot --clean` produced all 6 archives + 2 Docker images. Ran the resulting image (`docker run` with a real `OPENAI_API_KEY`) — served `/healthz`, correctly reported the injected snapshot version via `locker version`, and successfully completed a real TLS handshake to `api.openai.com` (proving `ca-certificates` are present in the distroless final image — got a real 401 back, not a connection/TLS error). Extracted and ran the `linux_amd64` archive's binary directly with the same result.
 
 ---
 
