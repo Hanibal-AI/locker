@@ -172,27 +172,34 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 
 ---
 
-## Phase 7 — Distribution & Packaging
+## Phase 7 — Cross-Platform Release Pipeline (goreleaser)
 
-**Goal:** deliver every artifact promised in `initial.md`, ready to run in under 5 minutes.
+**Goal:** ship binaries and a Docker image from a single, git-tag-triggered pipeline, ready to run in under 5 minutes.
 
-- [ ] **7.1 Docker image**
-  - Multi-stage `Dockerfile` (minimal final image, distroless or scratch-based where possible).
-  - Publish to Docker Hub and GHCR, tagged by semver + `latest`.
-  - Automate build/publish in CI on tagged releases.
-- [ ] **7.2 Helm chart**
-  - `/charts/locker` with configurable values (replica count, resources, config mounting via `ConfigMap`/`Secret`).
-  - Chart-testing CI job (`helm lint`, `helm template`, install against a kind/k3d cluster in CI).
-  - Publish chart to a Helm repo (GitHub Pages-hosted index or ArtifactHub listing).
-- [ ] **7.3 Single compiled binaries**
-  - Cross-compile for Linux/macOS/Windows (amd64/arm64) via `goreleaser`.
-  - Attach to GitHub Releases automatically on tag push.
-- [ ] **7.4 CLI polish**
+- [ ] **7.1 goreleaser configuration**
+  - Cross-compile for Linux/macOS/Windows (amd64/arm64).
+  - Multi-arch Docker image build (multi-stage `Dockerfile`, minimal final image), published to GHCR — `GITHUB_TOKEN` is enough, no extra registry secrets to manage — tagged by semver + `latest`.
+  - GitHub Release created automatically with binaries attached and a generated changelog.
+- [ ] **7.2 CLI polish**
   - `locker start --config config.yaml`, `locker version`, `locker validate-config`.
   - Shell completion (bash/zsh) as a nice-to-have.
-- [ ] **7.5 Kubernetes manifests (non-Helm alternative)**
+- [ ] **7.3 CI wiring**
+  - New GitHub Actions workflow triggered on tag push (`v*`), running `goreleaser release`.
+- [ ] **7.4 Deliverable** — a new user can go from zero to a running, PII-masking proxy via `docker run` (the GHCR image) or by downloading a binary from GitHub Releases — both produced from the same tagged push, each path documented with a copy-pasteable quickstart.
+
+---
+
+## Phase 7.5 — Kubernetes Packaging (Helm + manifests)
+
+**Goal:** give Kubernetes-based teams a first-class install path, published alongside the Phase 7 release rather than through a separate process.
+
+- [ ] **7.5.1 Helm chart**
+  - `/charts/locker` with configurable values (replica count, resources, config mounting via `ConfigMap`/`Secret`).
+  - Chart-testing CI job (`helm lint`, `helm template`, install against a kind/k3d cluster in CI).
+  - Publish the chart as an OCI artifact to GHCR (`oci://ghcr.io/hanibal-ai/charts/locker`) — the same registry as the Docker image, rather than maintaining a separate `gh-pages` index.
+- [ ] **7.5.2 Kubernetes manifests (non-Helm alternative)**
   - Plain YAML manifests in `/deploy/k8s` for teams that don't use Helm.
-- [ ] **7.6 Deliverable** — a new user can go from zero to a running, PII-masking proxy via `docker run`, `helm install`, or downloading a binary — each path documented with a copy-pasteable quickstart.
+- [ ] **7.5.3 Deliverable** — a new user can go from zero to a running, PII-masking proxy via `helm install oci://ghcr.io/hanibal-ai/charts/locker` or `kubectl apply -f deploy/k8s`, each path documented with a copy-pasteable quickstart.
 
 ---
 
@@ -261,7 +268,8 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 | 4 | Symbolic "Fourmi" layer | 3 |
 | 5 | Streaming/perf/hardening | 4 |
 | 6 | Multi-provider support | 1 (can run in parallel with 2–5) |
-| 7 | Distribution & packaging | 5, 6 |
-| 8 | Documentation & community | 7 |
+| 7 | Cross-platform release pipeline (goreleaser) | 5, 6 |
+| 7.5 | Kubernetes packaging (Helm + manifests) | 7 |
+| 8 | Documentation & community | 7, 7.5 |
 | 9 | Public v1.0 launch | 8 |
 | 10 | Post-launch iteration | 9 |
