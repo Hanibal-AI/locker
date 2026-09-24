@@ -28,6 +28,7 @@ import (
 
 	"github.com/Hanibal-AI/locker/internal/config"
 	"github.com/Hanibal-AI/locker/internal/pii"
+	"github.com/Hanibal-AI/locker/internal/providers"
 	"github.com/Hanibal-AI/locker/internal/proxy"
 )
 
@@ -40,6 +41,17 @@ func (p *stubProvider) Target(path string) string {
 	return p.baseURL + strings.TrimPrefix(path, "/v1")
 }
 func (p *stubProvider) Authenticate(*http.Request) {}
+
+func (p *stubProvider) TranslateRequest(body []byte) ([]byte, error)  { return body, nil }
+func (p *stubProvider) TranslateResponse(body []byte) ([]byte, error) { return body, nil }
+func (p *stubProvider) NewStreamTranslator() providers.StreamTranslator {
+	return stubStreamTranslator{}
+}
+
+type stubStreamTranslator struct{}
+
+func (stubStreamTranslator) Feed(chunk []byte) []byte { return chunk }
+func (stubStreamTranslator) Flush() []byte            { return nil }
 
 const nonStreamingBody = `{"model":"gpt-4o","messages":[{"role":"user","content":` +
 	`"Hi, I work with Martin at Renault in Boulogne. Please email jean.dupont@example.com."}]}`

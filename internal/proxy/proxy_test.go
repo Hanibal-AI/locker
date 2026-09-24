@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Hanibal-AI/locker/internal/providers"
 )
 
 // stubProvider is a test double for providers.Provider that points at a
@@ -27,6 +29,20 @@ func (p *stubProvider) Authenticate(req *http.Request) {
 		req.Header.Set("Authorization", p.authHeader)
 	}
 }
+
+// stubProvider's own upstream (in these tests, an httptest.Server) always
+// already speaks OpenAI-compatible shape, so translation is identity —
+// see providers.passthroughTranslation for the production equivalent.
+func (p *stubProvider) TranslateRequest(body []byte) ([]byte, error)  { return body, nil }
+func (p *stubProvider) TranslateResponse(body []byte) ([]byte, error) { return body, nil }
+func (p *stubProvider) NewStreamTranslator() providers.StreamTranslator {
+	return stubStreamTranslator{}
+}
+
+type stubStreamTranslator struct{}
+
+func (stubStreamTranslator) Feed(chunk []byte) []byte { return chunk }
+func (stubStreamTranslator) Flush() []byte            { return nil }
 
 func TestHandleChatCompletions_PassThrough(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

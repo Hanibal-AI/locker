@@ -136,7 +136,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		forwardBody = masked
 	}
 
-	upstreamReq, err := s.buildUpstreamRequest(r, forwardBody)
+	// PII masking always operates on Locker's OpenAI-compatible shape;
+	// provider-native translation (identity for OpenAI/Mistral, real
+	// reshaping for Anthropic) happens after, so internal/pii never needs
+	// to know about a specific provider's request shape (Docs/roadmap.md
+	// Phase 6).
+	translatedBody, err := s.provider.TranslateRequest(forwardBody)
+	if err != nil {
+		log.Printf("error translating request for %s: %v", s.provider.Name(), err)
+		writeError(w, http.StatusBadRequest, "failed to translate request for provider")
+		return
+	}
+
+	upstreamReq, err := s.buildUpstreamRequest(r, translatedBody)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build upstream request")
 		return
@@ -164,7 +176,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Content-Length.
 		w.Header().Del("Content-Length")
 		w.WriteHeader(resp.StatusCode)
-		streamResponse(w, resp.Body, table, s.streamLookback, s.streamIdleTimeout)
+		streamResponse(w, resp.Body, table, s.provider.NewStreamTranslator(), s.streamLookback, s.streamIdleTimeout)
 		return
 	}
 
@@ -174,6 +186,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "failed to read upstream response")
 		return
 	}
+
+	// Provider-native translation happens before PII unmasking, same as
+	// the request side — see the TranslateRequest call above. Only a
+	// success response has the shape TranslateResponse expects; a
+	// provider-native error body (a different shape entirely) is
+	// forwarded as-is rather than mangled into a phantom empty success.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		translatedResp, err := s.provider.TranslateResponse(respBody)
+		if err != nil {
+			log.Printf("error translating response from %s: %v", s.provider.Name(), err)
+			writeError(w, http.StatusBadGateway, "failed to translate upstream response")
+			return
+		}
+		respBody = translatedResp
+	}
+
 	if table.Len() > 0 {
 		if unmasked, err := pii.UnmaskJSON(respBody, table); err != nil {
 			log.Printf("error unmasking response body: %v", err)
@@ -257,15 +285,17 @@ func isEventStream(h http.Header) bool {
 	return strings.Contains(h.Get("Content-Type"), "text/event-stream")
 }
 
-// streamResponse forwards body to w as soon as bytes are available,
-// restoring any placeholder tokens via table (see pii.SSEUnmasker) and
-// flushing after every read so Server-Sent Events reach the client with
-// as little added buffering as safely possible (see Docs/roadmap.md
-// Phase 1.4 and 2.4). lookback is forwarded to pii.NewSSEUnmasker. If
-// idleTimeout > 0, body is force-closed (and the loop exits) when no
-// bytes have arrived for that long — see Docs/roadmap.md Phase 5.3 and
-// streamWatchdog.
-func streamResponse(w http.ResponseWriter, body io.ReadCloser, table *pii.Table, lookback int, idleTimeout time.Duration) {
+// streamResponse forwards body to w as soon as bytes are available. Each
+// raw chunk first passes through translator (provider-native SSE ->
+// OpenAI-compatible SSE — identity for OpenAI/Mistral, real event
+// translation for Anthropic; see Docs/roadmap.md Phase 6), then through
+// pii.SSEUnmasker to restore any placeholder tokens, flushing after every
+// read so Server-Sent Events reach the client with as little added
+// buffering as safely possible (see Docs/roadmap.md Phase 1.4 and 2.4).
+// lookback is forwarded to pii.NewSSEUnmasker. If idleTimeout > 0, body
+// is force-closed (and the loop exits) when no bytes have arrived for
+// that long — see Docs/roadmap.md Phase 5.3 and streamWatchdog.
+func streamResponse(w http.ResponseWriter, body io.ReadCloser, table *pii.Table, translator providers.StreamTranslator, lookback int, idleTimeout time.Duration) {
 	flusher, canFlush := w.(http.Flusher)
 	unmasker := pii.NewSSEUnmasker(table, lookback)
 	reader := bufio.NewReader(body)
@@ -306,13 +336,17 @@ func streamResponse(w http.ResponseWriter, body io.ReadCloser, table *pii.Table,
 		n, err := reader.Read(buf)
 		if n > 0 {
 			notifyActivity()
-			if !flushOut(unmasker.Feed(buf[:n])) {
+			translated := translator.Feed(buf[:n])
+			if !flushOut(unmasker.Feed(translated)) {
 				return
 			}
 		}
 		if err != nil {
 			if err != io.EOF && !stalled.Load() {
 				log.Printf("stream copy error: %v", err)
+			}
+			if tail := translator.Flush(); len(tail) > 0 {
+				flushOut(unmasker.Feed(tail))
 			}
 			flushOut(unmasker.Flush())
 			return

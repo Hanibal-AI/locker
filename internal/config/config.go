@@ -77,9 +77,37 @@ const (
 	defaultListenAddr        = ":8080"
 	defaultRequestTimeout    = 60 * time.Second
 	defaultProvider          = "openai"
-	defaultOpenAIBaseURL     = "https://api.openai.com/v1"
 	defaultStreamIdleTimeout = 90 * time.Second
 )
+
+// providerDefaults describes how a built-in provider's API key and base
+// URL are picked up from the environment when not set in config.yaml.
+// See Docs/roadmap.md Phase 6.3 ("how to add a provider"): adding a new
+// provider here plus a case in providers.New (internal/providers) is the
+// whole integration surface — no other package needs to change.
+type providerDefaults struct {
+	envAPIKey  string
+	envBaseURL string
+	baseURL    string
+}
+
+var knownProviders = map[string]providerDefaults{
+	"openai": {
+		envAPIKey:  "OPENAI_API_KEY",
+		envBaseURL: "OPENAI_BASE_URL",
+		baseURL:    "https://api.openai.com/v1",
+	},
+	"anthropic": {
+		envAPIKey:  "ANTHROPIC_API_KEY",
+		envBaseURL: "ANTHROPIC_BASE_URL",
+		baseURL:    "https://api.anthropic.com",
+	},
+	"mistral": {
+		envAPIKey:  "MISTRAL_API_KEY",
+		envBaseURL: "MISTRAL_BASE_URL",
+		baseURL:    "https://api.mistral.ai/v1",
+	},
+}
 
 // Load reads configuration from the YAML file at path, if it exists,
 // applies environment variable overrides on top, fills in defaults, and
@@ -175,17 +203,19 @@ func applyEnvOverrides(cfg *Config) error {
 		cfg.PII.StreamLookbackBytes = n
 	}
 
-	openai := cfg.Providers["openai"]
-	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-		openai.APIKey = v
+	for name, pd := range knownProviders {
+		entry := cfg.Providers[name]
+		if v := os.Getenv(pd.envAPIKey); v != "" {
+			entry.APIKey = v
+		}
+		if v := os.Getenv(pd.envBaseURL); v != "" {
+			entry.BaseURL = v
+		}
+		if entry.BaseURL == "" {
+			entry.BaseURL = pd.baseURL
+		}
+		cfg.Providers[name] = entry
 	}
-	if v := os.Getenv("OPENAI_BASE_URL"); v != "" {
-		openai.BaseURL = v
-	}
-	if openai.BaseURL == "" {
-		openai.BaseURL = defaultOpenAIBaseURL
-	}
-	cfg.Providers["openai"] = openai
 	return nil
 }
 

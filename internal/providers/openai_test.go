@@ -40,7 +40,7 @@ func TestOpenAI_Authenticate(t *testing.T) {
 }
 
 func TestNew_UnsupportedProvider(t *testing.T) {
-	if _, err := New("anthropic", config.ProviderConfig{}); err == nil {
+	if _, err := New("cohere", config.ProviderConfig{}); err == nil {
 		t.Fatal("expected an error for an unsupported provider, got nil")
 	}
 }

@@ -37,8 +37,8 @@ func TestLoad_EnvOnly_NoFile(t *testing.T) {
 	if got := cfg.ActiveProvider().APIKey; got != "sk-test" {
 		t.Errorf("APIKey = %q, want %q", got, "sk-test")
 	}
-	if got := cfg.ActiveProvider().BaseURL; got != defaultOpenAIBaseURL {
-		t.Errorf("BaseURL = %q, want %q", got, defaultOpenAIBaseURL)
+	if got := cfg.ActiveProvider().BaseURL; got != knownProviders["openai"].baseURL {
+		t.Errorf("BaseURL = %q, want %q", got, knownProviders["openai"].baseURL)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 )
 
 type openAIProvider struct {
+	passthroughTranslation
 	baseURL string
 	apiKey  string
 }

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Hanibal-AI/locker/internal/providers"
 )
 
 // secretHeaderProvider is a stubProvider variant that injects a
@@ -22,6 +24,12 @@ func (p *secretHeaderProvider) Name() string { return "secret-stub" }
 func (p *secretHeaderProvider) Target(path string) string {
 	return p.baseURL + strings.TrimPrefix(path, "/v1")
 }
+func (p *secretHeaderProvider) TranslateRequest(body []byte) ([]byte, error)  { return body, nil }
+func (p *secretHeaderProvider) TranslateResponse(body []byte) ([]byte, error) { return body, nil }
+func (p *secretHeaderProvider) NewStreamTranslator() providers.StreamTranslator {
+	return stubStreamTranslator{}
+}
+
 func (p *secretHeaderProvider) Authenticate(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+p.secret)
 }

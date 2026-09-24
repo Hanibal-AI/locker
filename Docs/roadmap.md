@@ -159,12 +159,16 @@ The plan is organized as sequential phases. Each phase has concrete steps and su
 
 **Goal:** extend beyond OpenAI to match the "2-3 providers" promise in `initial.md`.
 
-- [ ] **6.1 Anthropic adapter** — request/response translation to/from the OpenAI-compatible surface exposed by Locker.
-- [ ] **6.2 Mistral adapter** — same pattern.
-- [ ] **6.3 Provider abstraction cleanup**
+- [x] **6.1 Anthropic adapter** — request/response translation to/from the OpenAI-compatible surface exposed by Locker.
+  - Anthropic's Messages API genuinely differs in shape (top-level `system` instead of a `system`-role message, required `max_tokens`, `content` as an array of typed blocks, and a `content_block_delta`/`message_delta`/`message_stop` streaming event model instead of `choices[].delta.content`) — this needed real translation, not just routing. `internal/providers/anthropic.go` + `anthropic_stream.go` implement `TranslateRequest`/`TranslateResponse`/`NewStreamTranslator`; PII masking (`internal/pii`) required zero changes since it only ever sees Locker's own OpenAI-compatible shape, before/after translation.
+- [x] **6.2 Mistral adapter** — same pattern.
+  - Mistral's chat completions API is already OpenAI-shaped, so `internal/providers/mistral.go` only implements routing/auth and embeds `passthroughTranslation` for identity request/response/stream translation — no reshaping needed.
+- [x] **6.3 Provider abstraction cleanup**
   - Extract a clean `Provider` interface so community contributors can add new providers without touching core proxy logic.
   - Document "how to add a provider" as a contributor guide.
-- [ ] **6.4 Deliverable** — the same client code (unmodified, just swapping a `model` field or config entry) can route to OpenAI, Anthropic, or Mistral through Locker.
+  - `Provider` now covers translation too (`TranslateRequest`/`TranslateResponse`/`NewStreamTranslator`), and `config.knownProviders` generalizes the per-provider env var/default-base-URL wiring that used to be OpenAI-only. Adding a provider touches exactly two places (`providers.New`'s switch, `config.knownProviders`) plus its own new file — `internal/proxy` needed no changes for Mistral and only a call-site wiring change (already done) to route through translation for any future provider. Contributor guide added to `CONTRIBUTING.md` ("Adding a provider").
+- [x] **6.4 Deliverable** — the same client code (unmodified, just swapping a `model` field or config entry) can route to OpenAI, Anthropic, or Mistral through Locker.
+  - Proven at three levels: unit tests per provider (`internal/providers/*_test.go`, 87.5% coverage), end-to-end proxy tests against a fake upstream speaking each provider's *native* shape (`internal/proxy/anthropic_e2e_test.go`, covering non-streaming, streaming, and Mistral's identity path — PII masked going out, restored coming back, in every case), and re-validated against the compiled binary with a real Anthropic-shaped fake upstream (correct `/v1/messages` path, `x-api-key`/`anthropic-version` headers, `system` extraction, `max_tokens` default, and native SSE events correctly translated into OpenAI-shaped chunks ending in `[DONE]`).
 
 ---
 
